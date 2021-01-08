@@ -2,10 +2,10 @@ package ru.cs.myasoedov.server.interaction;
 
 import myasoedov.cs.utils.CommandAndHangar;
 import myasoedov.cs.utils.DoubleContainer;
-import myasoedov.cs.utils.HangarAndTrain;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.Objects;
 
 public class ServerConnection {
     private final Socket socket;
@@ -20,42 +20,45 @@ public class ServerConnection {
 
     public CommandAndHangar receive() throws IOException {
         try {
-            CommandAndHangar db = (CommandAndHangar) inputStream.readObject();
-            return db;
-        } catch (ClassCastException | IOException | ClassNotFoundException e) {
-            //send(new DoubleContainer<>("exception", new Exception("Сервер не смог принять данные", e)));
-            e.printStackTrace();
+            CommandAndHangar ch = (CommandAndHangar) inputStream.readObject();
+            return ch;
+        } catch (Exception e) {
+            throw new RuntimeException("Не получилось принять данные", e);
         }
-        return null;
     }
 
     public void send(DoubleContainer<String, ?> doubleContainer) throws IOException {
         try {
-            synchronized (outputStream) {
-                outputStream.writeObject(doubleContainer);
-                outputStream.flush();
-            }
+            outputStream.writeObject(doubleContainer);
+            outputStream.flush();
         } catch (IOException e) {
-            //send(new DoubleContainer<>("exception", new Exception("Ошибка при передачи данных сервером", e)));
-            e.printStackTrace();
+            throw new RuntimeException("Не получилось отправить данные", e);
         }
 
     }
 
-    public boolean close(HangarAndTrain hangarAndTrain) throws IOException {
+    public boolean close() {
         try {
-            CommandAndHangar commandAndHangar = new CommandAndHangar("disconnect", hangarAndTrain);
-            outputStream.writeObject(new DoubleContainer<>());
             socket.close();
+            outputStream.close();
+            inputStream.close();
             return true;
         } catch (IOException e) {
-            try {
-                throw new IOException("Не получилось закрыть соединение", e);
-            } catch (IOException ioException) {
-                send(new DoubleContainer<>("exception", new Exception("Не получилось закрыть соединение со стороны сервера!", e)));
-            }
-            e.printStackTrace();
+            throw new RuntimeException("Не получилось закрыть соединение", e);
         }
-        return false;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        ServerConnection that = (ServerConnection) o;
+        return Objects.equals(socket, that.socket) && Objects.equals(inputStream, that.inputStream) && Objects.equals(outputStream, that.outputStream);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(socket, inputStream, outputStream);
     }
 }
+

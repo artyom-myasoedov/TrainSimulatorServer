@@ -1,7 +1,6 @@
 package ru.cs.myasoedov;
 
 import myasoedov.cs.Configs;
-import myasoedov.cs.factories.WagonFactory;
 import myasoedov.cs.models.storages.Storage;
 import myasoedov.cs.models.trains.Train;
 import myasoedov.cs.storages.train.FreightTrainDBStorage;
@@ -11,6 +10,7 @@ import myasoedov.cs.trains.PassengerTrain;
 import myasoedov.cs.utils.CommandAndHangar;
 import myasoedov.cs.utils.CommandAndTrains;
 import myasoedov.cs.utils.DoubleContainer;
+import myasoedov.cs.utils.JsonConverter;
 import ru.cs.myasoedov.server.interaction.ServerConnection;
 
 
@@ -19,27 +19,25 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.sql.SQLException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class Server {
-    private ServerSocket serverSocket;
-    private int port;
-    public static Map<Integer, ServerConnection> connections;
-    public static Map<Integer, Train> trains;
-    public final Integer maxNumberOfClients;
-    public final Deque<Integer> queue = new LinkedList<>();
-    public final Storage<PassengerTrain> passengerTrainStorage = new PassengerTrainDBStorage(Configs.JDBC_URL, Configs.USER_NAME, Configs.USER_PAROL);
-    public final Storage<FreightTrain> freightTrainStorage = new FreightTrainDBStorage(Configs.JDBC_URL, Configs.USER_NAME, Configs.USER_PAROL);
+    private final ServerSocket serverSocket;
+    private static Map<Integer, ServerConnection> connections;
+    private static Map<Integer, Train> trains;
+    private final Integer maxNumberOfClients;
+    private final Deque<Integer> queue = new LinkedList<>();
+    private final Storage<PassengerTrain> passengerTrainStorage = new PassengerTrainDBStorage(Configs.JDBC_URL, Configs.USER_NAME, Configs.USER_PAROL);
+    private final Storage<FreightTrain> freightTrainStorage = new FreightTrainDBStorage(Configs.JDBC_URL, Configs.USER_NAME, Configs.USER_PAROL);
+    private final JsonConverter converter = new JsonConverter();
 
     public Server(int port) throws IOException {
-        this.port = port;
         serverSocket = new ServerSocket(port);
         maxNumberOfClients = 5;
-        trains = new ConcurrentHashMap<>();
-        connections = new ConcurrentHashMap<>();
+        trains = new HashMap<>();
+        connections = new HashMap<>();
         for (int i = 0; i < maxNumberOfClients; i++) {
-            trains.put(i, new PassengerTrain(UUID.randomUUID()));
-            queue.addFirst(i);
+            trains.put(i, null);
+            queue.addLast(i);
         }
     }
 
@@ -52,7 +50,7 @@ public class Server {
     }
 
     public void setConnections(Map<Integer, ServerConnection> connections) {
-        this.connections = connections;
+        Server.connections = connections;
     }
 
     public Map<Integer, Train> getTrains() {
@@ -60,34 +58,15 @@ public class Server {
     }
 
     public void setTrains(Map<Integer, Train> trains) {
-        this.trains = trains;
+        Server.trains = trains;
     }
 
     public void accept() throws IOException, ClassNotFoundException {
-//        ObjectOutputStream op = new ObjectOutputStream(new FileOutputStream(new File("D:\\test.txt")));
-//        ObjectInputStream ip = new ObjectInputStream(new FileInputStream(new File("D:\\test.txt")));
-//        String id = UUID.randomUUID().toString();
-//        Train train1 = new PassengerTrain(UUID.fromString(id));
-//        Train train2;
-//        train1.addHeadWagon(WagonFactory.createDefaultRestaurantWagon());
-//        train1.addHeadWagon(WagonFactory.createDefaultRestaurantWagon());
-//        train1.addHeadWagon(WagonFactory.createDefaultRestaurantWagon());
-//        train1.addLocomotive(WagonFactory.createDefaultDieselLocomotive());
-//        train1.addLocomotive(WagonFactory.createDefaultDieselLocomotive());
-//        System.out.println(train1.getLocomotivesSize() + " " + train1.getWagonsSize() + " " + train1.getClass().getName());
-//        System.out.println(train1.getLocomotive(0).getClass().getName());
-//        System.out.println(train1.getLocomotive(1).getClass().getName());
-//        op.writeObject(train1);
-//        op.flush();
-//        train2 = (Train) ip.readObject();
-//        System.out.println(train2.getLocomotivesSize() + " " + train2.getWagonsSize() + " " + train2.getClass().getName());
-//        System.out.println(train2.getLocomotive(0).getClass().getName());
-//        System.out.println(train1.getLocomotive(1).getClass().getName());
-
 
         while (true) {
             Socket socket = serverSocket.accept();
             new MyThread(socket).start();
+
         }
     }
 
@@ -101,18 +80,15 @@ public class Server {
         });
     }
 
-    public void sendExceptionToAll(Throwable e) {
-        sendToAll(new DoubleContainer<>("exception", e));
-    }
-
-    class MyThread extends Thread{
+    class MyThread extends Thread {
 
 
-        private Socket socket;
+        private final Socket socket;
+        private int exceptionCounter = 0;
+
         public MyThread(Socket socket) {
             this.socket = socket;
         }
-
 
 
         @Override
@@ -120,57 +96,76 @@ public class Server {
             try {
                 ServerConnection connection = new ServerConnection(socket);
                 connections.put(queue.getFirst(), connection);
-                connection.send(new DoubleContainer<>("start", new DoubleContainer<>(queue.pollFirst(), trains)));
-                while (true) {
+                connection.send(new DoubleContainer<>("start", new DoubleContainer<>(queue.pollFirst(), converter.trainsToJson(trains))));
+                while (!this.isInterrupted()) {
                     try {
                         CommandAndHangar cmh = connection.receive();
+                        exceptionCounter = 0;
                         switch (cmh.getFirst()) {
-                            case "update" -> {
-                                trains.put(cmh.getSecond().getFirst(), cmh.getSecond().getSecond());
-                                sendToAll(new CommandAndTrains("update", trains));
-                            }
+                            case "update" -> trains.put(cmh.getSecond().getFirst(), converter.jsonToTrain(cmh.getSecond().getSecond()));
                             case "save" -> {
-                                trains.put(cmh.getSecond().getFirst(), cmh.getSecond().getSecond());
-                                if (cmh.getSecond().getSecond().getClass().equals(PassengerTrain.class)) {
-                                    passengerTrainStorage.save((PassengerTrain) cmh.getSecond().getSecond());
+                                Train train = converter.jsonToTrain(cmh.getSecond().getSecond());
+                                trains.put(cmh.getSecond().getFirst(), train);
+                                if (train.getClass().equals(PassengerTrain.class)) {
+                                    passengerTrainStorage.save((PassengerTrain) train);
                                 } else {
-                                    freightTrainStorage.save((FreightTrain) cmh.getSecond().getSecond());
+                                    freightTrainStorage.save((FreightTrain) train);
                                 }
                                 connections.get(cmh.getSecond().getFirst()).send(new DoubleContainer<>("saved", "Поезд успешно сохранён!"));
                             }
                             case "load" -> {
-                                Train train = null;
+                                Train train = converter.jsonToTrain(cmh.getSecond().getSecond());
                                 try {
-                                    train = passengerTrainStorage.get(cmh.getSecond().getSecond().getId());
-                                } catch (Exception e) {
+                                    train = passengerTrainStorage.get(train.getId());
+                                } catch (SQLException e) {
                                     e.printStackTrace();
                                 }
                                 try {
-                                    train = freightTrainStorage.get(cmh.getSecond().getSecond().getId());
-                                } catch (Exception e) {
+                                    train = freightTrainStorage.get(train.getId());
+                                } catch (SQLException e) {
                                     e.printStackTrace();
                                 }
                                 trains.put(cmh.getSecond().getFirst(), train);
-                                sendToAll(new DoubleContainer<>("update", trains));
                             }
-                            case "disconnect" -> {
-                                connections.remove(cmh.getSecond().getFirst());
-                                sendToAll(new CommandAndTrains("update", trains));
-                            }
+                            case "disconnect" -> disconnectClient(connection);
                         }
-                    } catch (NullPointerException | IOException | SQLException e) {
-                        try {
-                            connection.send(new DoubleContainer<>("exception", e));
-                        } catch (IOException ioException) {
-                            ioException.printStackTrace();
+                        sendToAll(new DoubleContainer<>("update", converter.trainsToJson(trains)));
+                    } catch (Exception e) {
+                        if (2 < exceptionCounter++) {
+                            disconnectClient(connection);
                         }
                     }
                 }
             } catch (IOException e) {
-                e.printStackTrace();
+                throw new RuntimeException(e);
             }
+        }
+
+        private void disconnectClient(ServerConnection connection) {
+            this.interrupt();
+            final Integer[] id = new Integer[1];
+            connections.forEach((k, v) -> {
+                if (v.equals(connection)) {
+                    id[0] = k;
+                }
+            });
+            queue.addFirst(id[0]);
+            removeConnection(connection);
         }
     }
 
+
+    public static boolean removeConnection(ServerConnection connection) {
+        final Integer[] id = new Integer[1];
+        connections.forEach((k, v) -> {
+            if (v.equals(connection)) {
+                id[0] = k;
+            }
+        });
+        connections.remove(id[0]);
+        connection.close();
+        trains.put(id[0], null);
+        return true;
+    }
 }
 
